@@ -31,6 +31,9 @@ import requests
 import geocoder
 import json
 import re
+import argparse
+import webbrowser
+import urllib
 from bs4 import BeautifulSoup
 
 def get_inspection_page(**kwargs):
@@ -112,7 +115,25 @@ def get_score_data(elem):
     return {u'Average Score': average, u'High Score': high_score,
             u'Total Inspections': samples}
  
-def get_geojson(result):
+ 
+def set_color (result, type):
+    try:
+        if args.type == 'average':
+            if result["Average Score"] < 10: return "#00FF00"
+            if result["Average Score"] < 25: return "#FFFF00"
+            return "FF0000"
+        elif args.type == 'highscore':
+            if result["High Score"] < 10: return "#00FF00"
+            if result["High Score"] < 25: return "#FFFF00"
+            return "FF0000"
+        else:
+            if result["Total Inspections"] < 1: return "#00FF00"
+            if result["Total Inspections"] < 5: return "#FFFF00"
+            return "FF0000"
+    except KeyError:
+        return "#0F0F0F"
+   
+def get_geojson(result, sort_type):
     address = " ".join(result.get('Address', ''))
     if not address:
         return None
@@ -128,31 +149,87 @@ def get_geojson(result):
         if isinstance(val, list):
             val = " ".join(val)
         inspection_data[key] = val
+    
+    inspection_data['marker-color'] = set_color (result, type)
     geojson['properties'] = inspection_data
+
     return geojson
  
-def result_generator(count):
+def result_generator():
     use_params = {
         'Inspection_Start': '2/1/2013',
         'Inspection_End': '2/1/2015',
         'Zip_Code': '98101'
     }
+    
+    '''
+    Get data. Either from source or from saved file.
+    '''
     # html, encoding = get_inspection_page(**use_params)
     html, encoding = load_inspection_page('kc.html')
+    
+    results = []
     parsed = parse_source(html, encoding)
     content_col = parsed.find("td", id="contentcol")
     data_list = restaurant_data_generator(content_col)
-    for data_div in data_list[:count]:
+    for data_div in data_list:
         metadata = extract_restaurant_metadata(data_div)
         inspection_data = get_score_data(data_div)
         metadata.update(inspection_data)
-        yield metadata
+        results.append (metadata)
+    return results
  
 if __name__ == '__main__':
+    '''
+    Get arguments.
+    '''
+    usage = 'Usage: mashup.py ["average" | "highscore" |, "inspections" [<NumberToDisplay> ["reverse"]]]'
+    parser = argparse.ArgumentParser()
+    parser.add_argument("type", nargs='?', default = 'average')
+    parser.add_argument("number", type = int, nargs='?', default = 10)
+    parser.add_argument("direction", nargs='?', default='normal')
+    args = parser.parse_args()
+
+    if args.type.lower() not in  ['average',  'highscore', 'inspections',]:
+        print usage
+        exit(0)
+        
+    if args.number <= 0:
+        print 'NumberToDisplay must be greater than 0'
+        exit(0)   
+       
+    if args.direction.lower() not in  ['normal', 'reverse',]:
+        print usage
+        exit(0)
+
     total_result = {'type': 'FeatureCollection', 'features': []}
-    for result in result_generator(10):
-        geojson = get_geojson(result)
+    results = result_generator()
+    
+
+    if args.number > len(results):
+        args.number = len(results)
+        
+
+    '''
+    Sort.
+    '''
+    if args.type == 'average':
+        results = sorted(results, key=lambda data: data['Average Score'], reverse=args.direction.lower() == 'reverse')
+    elif args.type == 'highscore':
+        results = sorted(results, key=lambda data: data['High Score'], reverse=args.direction.lower() == 'reverse')
+    else:
+        results = sorted(results, key=lambda data: data['Total Inspections'], reverse=args.direction.lower() == 'reverse')
+   
+    results = results[:args.number]
+    for result in results:
+        print result
+        geojson = get_geojson(result, args.type)
         total_result['features'].append(geojson)
+        
     with open('my_map.json', 'w') as fh:
         json.dump(total_result, fh)
+        
+    url = "http://geojson.io/#data=data:application/json," + urllib.quote(json.dumps(total_result))
+    webbrowser.open(url,new=2)
+
 
